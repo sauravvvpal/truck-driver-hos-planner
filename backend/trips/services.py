@@ -31,6 +31,20 @@ class Location:
     display_name: str
 
 
+FALLBACK_LOCATIONS = {
+    'atlanta, ga': (33.7490, -84.3880, 'Atlanta, Georgia'),
+    'chicago, il': (41.8781, -87.6298, 'Chicago, Illinois'),
+    'columbus, oh': (39.9612, -82.9988, 'Columbus, Ohio'),
+    'dallas, tx': (32.7767, -96.7970, 'Dallas, Texas'),
+    'denver, co': (39.7392, -104.9903, 'Denver, Colorado'),
+    'houston, tx': (29.7604, -95.3698, 'Houston, Texas'),
+    'indianapolis, in': (39.7684, -86.1581, 'Indianapolis, Indiana'),
+    'los angeles, ca': (34.0522, -118.2437, 'Los Angeles, California'),
+    'new york, ny': (40.7128, -74.0060, 'New York, New York'),
+    'phoenix, az': (33.4484, -112.0740, 'Phoenix, Arizona'),
+}
+
+
 @dataclass(frozen=True)
 class RouteLeg:
     label: str
@@ -86,14 +100,21 @@ def build_trip_plan(current_location: str, pickup_location: str, dropoff_locatio
 
 
 def geocode_location(label: str, query: str) -> Location:
-    response = requests.get(
-        'https://nominatim.openstreetmap.org/search',
-        params={'q': query, 'format': 'json', 'limit': 1},
-        headers={'User-Agent': 'truck-eld-planner/1.0'},
-        timeout=15,
-    )
-    response.raise_for_status()
-    results = response.json()
+    try:
+        response = requests.get(
+            'https://nominatim.openstreetmap.org/search',
+            params={'q': query, 'format': 'json', 'limit': 1},
+            headers={'User-Agent': 'truck-eld-planner/1.0'},
+            timeout=15,
+        )
+        response.raise_for_status()
+        results = response.json()
+    except requests.RequestException:
+        fallback = _fallback_location(label, query)
+        if fallback:
+            return fallback
+        raise TripPlanningError('The geocoding provider is unavailable. Try a major US city such as Chicago, IL or Atlanta, GA.')
+
     if not results:
         raise TripPlanningError(f'Could not find {label.lower()}: {query}')
     result = results[0]
@@ -102,16 +123,52 @@ def geocode_location(label: str, query: str) -> Location:
 
 def fetch_route(locations: list[Location]) -> dict[str, Any]:
     coordinates = ';'.join(f'{location.lon},{location.lat}' for location in locations)
-    response = requests.get(
-        f'https://router.project-osrm.org/route/v1/driving/{coordinates}',
-        params={'overview': 'full', 'geometries': 'geojson', 'steps': 'false'},
-        timeout=20,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    try:
+        response = requests.get(
+            f'https://router.project-osrm.org/route/v1/driving/{coordinates}',
+            params={'overview': 'full', 'geometries': 'geojson', 'steps': 'false'},
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException:
+        return _fallback_route(locations)
+
     if payload.get('code') != 'Ok' or not payload.get('routes'):
-        raise TripPlanningError('No drivable route was found for those locations.')
+        return _fallback_route(locations)
     return payload['routes'][0]
+
+
+def _fallback_location(label: str, query: str) -> Location | None:
+    result = FALLBACK_LOCATIONS.get(query.strip().lower())
+    if not result:
+        return None
+
+    lat, lon, display_name = result
+    return Location(label=label, lat=lat, lon=lon, display_name=display_name)
+
+
+def _fallback_route(locations: list[Location]) -> dict[str, Any]:
+    geometry = [[location.lon, location.lat] for location in locations]
+    legs = []
+    for start, end in zip(locations, locations[1:]):
+        estimated_miles = _distance_between(start.lat, start.lon, end.lat, end.lon) * 1.18
+        legs.append({'distance': estimated_miles / MILES_PER_METER})
+
+    return {
+        'geometry': {'coordinates': geometry},
+        'legs': legs,
+    }
+
+
+def _distance_between(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> float:
+    earth_radius_miles = 3958.8
+    lat_delta = radians(end_lat - start_lat)
+    lon_delta = radians(end_lon - start_lon)
+    start_lat_rad = radians(start_lat)
+    end_lat_rad = radians(end_lat)
+    haversine = sin(lat_delta / 2) ** 2 + cos(start_lat_rad) * cos(end_lat_rad) * sin(lon_delta / 2) ** 2
+    return earth_radius_miles * 2 * atan2(sqrt(haversine), sqrt(1 - haversine))
 
 
 def _build_hos_events(legs: list[RouteLeg], locations: list[Location], geometry: list[list[float]], current_cycle_used: float) -> list[dict[str, Any]]:
