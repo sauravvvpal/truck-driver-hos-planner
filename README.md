@@ -83,17 +83,3 @@ cd backend
 cd frontend
 npm run build
 ```
-
-## Deployment Plan
-
-- Frontend: deploy `frontend` to Vercel. Set `VITE_API_URL` to the deployed backend API URL plus `/api`.
-- Backend: deploy `backend` to Render, Railway, Fly.io, or another Python host. Set `DJANGO_SECRET_KEY`, `DJANGO_DEBUG=false`, `DJANGO_ALLOWED_HOSTS`, and `CORS_ALLOWED_ORIGINS`.
-- If a single hosted demo is required, keep the React app on Vercel and link it to the backend host.
-
-## Interview Walkthrough
-
-1. Start with the product flow: inputs, route map, stops, and generated log sheets.
-2. Explain the backend service boundary: Django validates the request, calls geocoding/routing providers, then runs deterministic HOS planning logic.
-3. Explain HOS constraints: cycle limit, daily drive limit, 14-hour window, 30-minute break, 10-hour rest, fuel interval, pickup/drop-off service time.
-4. Show the frontend structure: React form state, API call, Leaflet map rendering, timeline, and ELD log-sheet drawing.
-5. Mention tradeoffs: public free APIs are excellent for demo use, while production freight software should use commercial geocoding/routing with SLAs and truck-specific restrictions.
