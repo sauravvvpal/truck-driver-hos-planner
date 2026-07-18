@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import atan2, cos, radians, sin, sqrt
+import os
 from typing import Any
 
 import requests
@@ -17,6 +18,7 @@ MAX_CYCLE_HOURS = 70
 FUEL_INTERVAL_MILES = 1000
 FUEL_STOP_HOURS = 0.5
 SERVICE_STOP_HOURS = 1
+OPENROUTESERVICE_API_KEY = os.getenv('OPENROUTESERVICE_API_KEY', '')
 
 
 class TripPlanningError(Exception):
@@ -100,6 +102,14 @@ def build_trip_plan(current_location: str, pickup_location: str, dropoff_locatio
 
 
 def geocode_location(label: str, query: str) -> Location:
+    if OPENROUTESERVICE_API_KEY:
+        try:
+            return _geocode_with_openrouteservice(label, query)
+        except requests.RequestException:
+            fallback = _fallback_location(label, query)
+            if fallback:
+                return fallback
+
     try:
         response = requests.get(
             'https://nominatim.openstreetmap.org/search',
@@ -122,6 +132,12 @@ def geocode_location(label: str, query: str) -> Location:
 
 
 def fetch_route(locations: list[Location]) -> dict[str, Any]:
+    if OPENROUTESERVICE_API_KEY:
+        try:
+            return _route_with_openrouteservice(locations)
+        except requests.RequestException:
+            return _fallback_route(locations)
+
     coordinates = ';'.join(f'{location.lon},{location.lat}' for location in locations)
     try:
         response = requests.get(
@@ -137,6 +153,51 @@ def fetch_route(locations: list[Location]) -> dict[str, Any]:
     if payload.get('code') != 'Ok' or not payload.get('routes'):
         return _fallback_route(locations)
     return payload['routes'][0]
+
+
+def _geocode_with_openrouteservice(label: str, query: str) -> Location:
+    response = requests.get(
+        'https://api.openrouteservice.org/geocode/search',
+        params={'api_key': OPENROUTESERVICE_API_KEY, 'text': query, 'size': 1},
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    features = payload.get('features', [])
+    if not features:
+        raise TripPlanningError(f'Could not find {label.lower()}: {query}')
+
+    feature = features[0]
+    lon, lat = feature['geometry']['coordinates']
+    display_name = feature.get('properties', {}).get('label', query)
+    return Location(label=label, lat=float(lat), lon=float(lon), display_name=display_name)
+
+
+def _route_with_openrouteservice(locations: list[Location]) -> dict[str, Any]:
+    response = requests.post(
+        'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+        headers={
+            'Authorization': OPENROUTESERVICE_API_KEY,
+            'Content-Type': 'application/json',
+        },
+        json={
+            'coordinates': [[location.lon, location.lat] for location in locations],
+            'instructions': False,
+        },
+        timeout=25,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    features = payload.get('features', [])
+    if not features:
+        raise TripPlanningError('No drivable route was found for those locations.')
+
+    route = features[0]
+    segments = route.get('properties', {}).get('segments', [])
+    return {
+        'geometry': {'coordinates': route['geometry']['coordinates']},
+        'legs': [{'distance': segment['distance']} for segment in segments],
+    }
 
 
 def _fallback_location(label: str, query: str) -> Location | None:
