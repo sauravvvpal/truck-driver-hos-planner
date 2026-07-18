@@ -61,6 +61,9 @@ def build_trip_plan(current_location: str, pickup_location: str, dropoff_locatio
         geocode_location('Dropoff location', dropoff_location),
     ]
     route = fetch_route(locations)
+    if len(route.get('legs', [])) < 2:
+        route = _fallback_route(locations)
+
     legs = [
         RouteLeg('Current to pickup', route['legs'][0]['distance'] * MILES_PER_METER, route['legs'][0]['distance'] * MILES_PER_METER / AVERAGE_TRUCK_SPEED_MPH),
         RouteLeg('Pickup to dropoff', route['legs'][1]['distance'] * MILES_PER_METER, route['legs'][1]['distance'] * MILES_PER_METER / AVERAGE_TRUCK_SPEED_MPH),
@@ -194,6 +197,9 @@ def _route_with_openrouteservice(locations: list[Location]) -> dict[str, Any]:
 
     route = features[0]
     segments = route.get('properties', {}).get('segments', [])
+    if len(segments) < len(locations) - 1:
+        return _fallback_route(locations)
+
     return {
         'geometry': {'coordinates': route['geometry']['coordinates']},
         'legs': [{'distance': segment['distance']} for segment in segments],
